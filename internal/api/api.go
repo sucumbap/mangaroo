@@ -5,7 +5,7 @@ import (
 	"github.com/go-chi/chi/middleware"
 )
 
-func SetupRouter() *chi.Mux {
+func SetupRouter(h *Handler) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -14,8 +14,8 @@ func SetupRouter() *chi.Mux {
 
 	// API v1 routes
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/", HomeHandler)
-		r.Post("/download", DownloadPostHandler)
+		r.Get("/", h.HomeHandler)
+		r.Post("/download", h.DownloadPostHandler)
 
 	})
 

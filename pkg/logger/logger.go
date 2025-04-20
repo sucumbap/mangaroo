@@ -1,31 +1,30 @@
 package logger
 
 import (
-	"log"
-	"os"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-type Logger interface {
-	Info(format string, v ...interface{})
-	Error(format string, v ...interface{})
-}
+var Log *zap.Logger
 
-type StdLogger struct {
-	info  *log.Logger
-	error *log.Logger
-}
-
-func New() *StdLogger {
-	return &StdLogger{
-		info:  log.New(os.Stdout, "INFO: ", log.LstdFlags|log.Lshortfile),
-		error: log.New(os.Stderr, "ERROR: ", log.LstdFlags|log.Lshortfile),
+func InitLogger(production bool) error {
+	var config zap.Config
+	if production {
+		config = zap.NewProductionConfig()
+	} else {
+		config = zap.NewDevelopmentConfig()
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	}
-}
 
-func (l *StdLogger) Info(format string, v ...interface{}) {
-	l.info.Printf(format, v...)
-}
+	config.EncoderConfig.TimeKey = "timestamp"
+	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 
-func (l *StdLogger) Error(format string, v ...interface{}) {
-	l.error.Printf(format, v...)
+	var err error
+	Log, err = config.Build()
+	if err != nil {
+		return err
+	}
+
+	zap.ReplaceGlobals(Log)
+	return nil
 }

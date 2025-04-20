@@ -124,7 +124,5 @@ func (ec *ElasticClient) GetMangaIndexName(mangaTitle, mangaID string) string {
 	cleanTitle := strings.ToLower(strings.TrimSpace(mangaTitle))
 	cleanTitle = regexp.MustCompile(`[^a-z0-9_]+`).ReplaceAllString(cleanTitle, "_")
 	cleanTitle = strings.Trim(cleanTitle, "_")
-
-	// Remove the ID part and just use the cleaned title
-	return fmt.Sprintf("manga_%s", cleanTitle)
+	return cleanTitle
 }

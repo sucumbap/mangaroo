@@ -11,11 +11,15 @@ import (
 
 	"github.com/sucumbap/mangaroo/internal/api"
 	"github.com/sucumbap/mangaroo/pkg/config"
+	"github.com/sucumbap/mangaroo/pkg/logger"
 )
 
 func main() {
-
-	r := api.SetupRouter()
+	// Initialize logger
+	logger.InitLogger(false)
+	// Initialize Handler
+	handler := &api.Handler{}
+	r := api.SetupRouter(handler)
 
 	cfg, err := config.Load()
 	if err != nil {

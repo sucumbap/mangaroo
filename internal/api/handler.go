@@ -13,12 +13,17 @@ import (
 	"github.com/sucumbap/mangaroo/pkg/config"
 )
 
-func HomeHandler(w http.ResponseWriter, r *http.Request) {
+type Handler struct {
+	// Add any dependencies you need here
+
+}
+
+func (h *Handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Welcome to Mangaroo!"))
 }
 
-func DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg, err := config.Load()
 	if err != nil {
