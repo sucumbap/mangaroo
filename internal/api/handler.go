@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sucumbap/mangaroo/internal/infrastructure"
+	"github.com/sucumbap/mangaroo/internal/infrastructure/client"
 	"github.com/sucumbap/mangaroo/internal/infrastructure/storage"
 	"github.com/sucumbap/mangaroo/internal/utils"
 	"github.com/sucumbap/mangaroo/pkg/config"
@@ -55,14 +55,14 @@ func DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config := infrastructure.Config{
+	config := client.Config{
 		BaseURL:      urlParam,
 		OutputFolder: "output",
 		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 	}
 
 	// Initialize downloader with manga ID
-	downloader, err := infrastructure.NewMangaDownloader(config, mangaID)
+	downloader, err := client.NewMangaDownloader(config, mangaID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to initialize downloader: %v", err), http.StatusInternalServerError)
 		return
