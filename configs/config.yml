@@ -1,0 +1,22 @@
+environment:
+  mode: development
+  port: 8080
+
+database:
+  host: localhost
+  port: 5432
+  user: your_username
+  password: your_password
+  name: your_database
+
+logging:
+  level: info
+  format: json
+
+service:
+  name: mangaroo
+  version: 1.0.0
+
+api:
+  base_url: /api/v1
+  timeout: 30s
