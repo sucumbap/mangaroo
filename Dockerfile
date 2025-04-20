@@ -1,32 +1,42 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.23
 
-WORKDIR /app
-
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o mangaroo ./cmd/main.go
-
-FROM alpine:latest
-
-WORKDIR /app
-
-COPY --from=builder /app/mangaroo .
-COPY --from=builder /app/configs ./configs
-
-# Install Chromium and dependencies
-RUN apk add --no-cache \
+# Install system dependencies including Chromium
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    unzip \
+    git \
+    build-essential \
+    ca-certificates \
+    libglib2.0-0 \
+    libnss3 \
+    libgconf-2-4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    fonts-liberation \
+    lsb-release \
+    xdg-utils \
+    gnupg \
     chromium \
-    harfbuzz \
-    nss \
-    freetype \
-    ttf-freefont \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
-ENV CHROME_PATH=/usr/bin/chromium-browser
+# Set environment variables for chromedp
+ENV CHROME_PATH=/usr/bin/chromium
 ENV CHROMIUM_USER_DATA_DIR=/tmp/chromium
 
-EXPOSE 8080
+WORKDIR /app
+
+COPY . .
+
+RUN go mod tidy && go build -o mangaroo cmd/main.go
 
 CMD ["./mangaroo"]

@@ -7,19 +7,15 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-    shm_size: '1gb'
+    shm_size: '1gb'  # Add shared memory
     volumes:
-      - ./manga_data:/app/manga_data
-      - ./output:/app/output
+      - ./manga_data:/app/manga_data  # Map local storage
+      - ./output:/app/output  # Additional output volume if needed
     environment:
       - CHROMIUM_USER_DATA_DIR=/tmp/chromium
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - LOG_LEVEL=debug
     networks:
       - mangaroo-net
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0

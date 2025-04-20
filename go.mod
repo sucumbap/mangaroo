@@ -24,4 +24,5 @@ require (
 	github.com/chromedp/chromedp v0.13.6
 	github.com/elastic/go-elasticsearch/v8 v8.18.0
 	github.com/go-chi/chi v1.5.5
+	github.com/kelseyhightower/envconfig v1.4.0
 )
