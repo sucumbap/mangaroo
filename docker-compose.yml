@@ -7,10 +7,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-    shm_size: '1gb'  # Add shared memory
+    shm_size: '10gb'
     volumes:
-      - ./manga_data:/app/manga_data  # Map local storage
-      - ./output:/app/output  # Additional output volume if needed
+      - ./manga_data:/app/manga_data
+      - ./output:/app/output
     environment:
       - CHROMIUM_USER_DATA_DIR=/tmp/chromium
       - ELASTICSEARCH_URL=http://elasticsearch:9200

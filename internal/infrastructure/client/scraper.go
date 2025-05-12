@@ -3,17 +3,20 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/chromedp/chromedp"
+	"github.com/sucumbap/mangaroo/internal/infrastructure/browser"
 	"github.com/sucumbap/mangaroo/internal/infrastructure/storage"
+	"github.com/sucumbap/mangaroo/internal/utils"
 )
 
 type Config struct {
@@ -28,6 +31,19 @@ type MangaDownloader struct {
 	cancelCtx context.CancelFunc
 	elastic   *storage.ElasticClient
 	mangaID   string
+	browserDP browser.ChromeDPInterface
+}
+type MangaDownloaderInterface interface {
+	GetMangaStatus() (string, error)
+	GetMangaTitle() (string, error)
+	downloadChapter(chapterNum int) error
+	downloadAndDetermineExtension(url, tempPath string) (string, error)
+	normalizeImageURL(url string) string
+	getChapterImageURLs(chapterURL string) ([]string, error)
+	getTotalChapters() (int, error)
+	Run() error
+	Close()
+	SetElasticClient(elasticClient *storage.ElasticClient)
 }
 
 func (md *MangaDownloader) SetElasticClient(elasticClient *storage.ElasticClient) {
@@ -38,37 +54,27 @@ func (md *MangaDownloader) SetElasticClient(elasticClient *storage.ElasticClient
 }
 
 func NewMangaDownloader(config Config, mangaID string) (*MangaDownloader, error) {
-	// Initialize Chrome
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.UserAgent(config.UserAgent),
-		chromedp.NoSandbox,
-		chromedp.DisableGPU,
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("no-zygote", true),
-		chromedp.Flag("remote-debugging-port", "9222"),
-		chromedp.Flag("remote-debugging-address", "0.0.0.0"),
-		chromedp.Flag("window-size", "1280,800"),
-		chromedp.Flag("user-data-dir", os.Getenv("CHROMIUM_USER_DATA_DIR")),
-	)
-
-	if chromePath := os.Getenv("CHROME_PATH"); chromePath != "" {
-		opts = append(opts, chromedp.ExecPath(chromePath))
+	// Initialize ChromeDP context
+	var browserDP browser.ChromeDPInterface = &browser.ChromeDP{}
+	chromeDPctx, err := browserDP.InitChromeDP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize ChromeDP: %w", err)
 	}
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, cancelCtx := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
 
 	return &MangaDownloader{
 		config:    config,
-		ctx:       ctx,
-		cancelCtx: func() { cancelCtx(); cancelAlloc() },
+		ctx:       chromeDPctx.Ctx,
+		cancelCtx: func() { chromeDPctx.CancelCtx(); chromeDPctx.CancelAlloc() },
 		elastic:   nil,
-		mangaID:   mangaID, // Set mangaID
+		mangaID:   mangaID,
+		browserDP: browserDP,
 	}, nil
 }
 
 func (md *MangaDownloader) Close() {
+	// Close the browser context
+	md.browserDP.CloseChromeDP()
+	// Cancel the context
 	md.cancelCtx()
 }
 
@@ -106,12 +112,23 @@ func (md *MangaDownloader) Run() error {
 
 func (md *MangaDownloader) getTotalChapters() (int, error) {
 	var count int
-	err := chromedp.Run(md.ctx,
-		chromedp.Navigate(md.config.BaseURL),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(`document.querySelectorAll('div.chapters table.uk-table tbody tr').length`, &count),
-	)
-	return count, err
+
+	if err := md.browserDP.Navigate(md.config.BaseURL); err != nil {
+		return 0, fmt.Errorf("failed to navigate to URL: %w", err)
+	}
+	// Sleep for 2 seconds
+	md.browserDP.Bsleep(2)
+	// Evaluate the JavaScript to get the total chapter count
+	result, err := md.browserDP.Evaluate(`document.querySelectorAll('div.chapters table.uk-table tbody tr').length`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to evaluate JavaScript: %w", err)
+	}
+	count, err = strconv.Atoi(result)
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert result to integer: %w", err)
+	}
+
+	return count, nil
 }
 
 func (md *MangaDownloader) downloadChapter(chapterNum int) error {
@@ -189,19 +206,34 @@ func (md *MangaDownloader) downloadChapter(chapterNum int) error {
 
 	return nil
 }
-
 func (md *MangaDownloader) getChapterImageURLs(chapterURL string) ([]string, error) {
+	// Navigate to the chapter URL
+	if err := md.browserDP.Navigate(chapterURL); err != nil {
+		return nil, fmt.Errorf("failed to navigate to chapter URL: %w", err)
+	}
+
+	// Sleep for 3 seconds to allow the page to load
+	md.browserDP.Bsleep(3)
+
+	// Evaluate JavaScript to extract image URLs
+	result, err := md.browserDP.Evaluate(`
+        JSON.stringify(
+            Array.from(document.querySelectorAll('div#imgs img')).map(img => {
+                return img.getAttribute('data-src') || img.getAttribute('src');
+            }).filter(url => url && !url.startsWith('data:'))
+        )
+    `)
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate JavaScript for image URLs: %w", err)
+	}
+
+	// Parse the JSON string into a slice of strings
 	var imageURLs []string
-	err := chromedp.Run(md.ctx,
-		chromedp.Navigate(chapterURL),
-		chromedp.Sleep(3*time.Second),
-		chromedp.Evaluate(`
-			Array.from(document.querySelectorAll('div#imgs img')).map(img => {
-				return img.getAttribute('data-src') || img.getAttribute('src');
-			}).filter(url => url && !url.startsWith('data:'))
-		`, &imageURLs),
-	)
-	return imageURLs, err
+	if err := json.Unmarshal([]byte(result), &imageURLs); err != nil {
+		return nil, fmt.Errorf("failed to parse image URLs: %w", err)
+	}
+
+	return imageURLs, nil
 }
 
 func (md *MangaDownloader) normalizeImageURL(url string) string {
@@ -221,28 +253,32 @@ func (md *MangaDownloader) normalizeImageURL(url string) string {
 }
 
 func (md *MangaDownloader) GetMangaStatus() (string, error) {
-	var status string
-	err := chromedp.Run(md.ctx,
-		chromedp.Navigate(md.config.BaseURL),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(`
-            // Find the status element by its specific class structure
-            const statusElement = document.querySelector('li.d-row-small div.status');
-            
-            // Return the status text if found, otherwise "Unknown"
-            statusElement ? statusElement.textContent.trim() : "Unknown"
-        `, &status),
-	)
-
-	// Clean up the status text
-	if err == nil && status != "" {
-		status = strings.TrimSpace(status)
-		// Remove any "status" class text if it appears in the content
-		status = strings.ReplaceAll(status, "status", "")
-		status = strings.TrimSpace(status)
+	// Navigate to the base URL
+	if err := md.browserDP.Navigate(md.config.BaseURL); err != nil {
+		return "", fmt.Errorf("failed to navigate to base URL: %w", err)
 	}
 
-	return status, err
+	// Sleep for 2 seconds to allow the page to load
+	md.browserDP.Bsleep(2)
+
+	// Evaluate JavaScript to extract the manga status
+	result, err := md.browserDP.Evaluate(`
+        // Find the status element by its specific class structure
+        const statusElement = document.querySelector('li.d-row-small div.status');
+        
+        // Return the status text if found, otherwise "Unknown"
+        statusElement ? statusElement.textContent.trim() : "Unknown"
+    `)
+	if err != nil {
+		return "", fmt.Errorf("failed to evaluate JavaScript for manga status: %w", err)
+	}
+
+	// Clean up the status text
+	status := strings.TrimSpace(result)
+	status = strings.ReplaceAll(status, "status", "")
+	status = strings.TrimSpace(status)
+
+	return status, nil
 }
 
 func (md *MangaDownloader) downloadAndDetermineExtension(url, tempPath string) (string, error) {
@@ -282,7 +318,7 @@ func (md *MangaDownloader) downloadAndDetermineExtension(url, tempPath string) (
 	}
 
 	// Determine extension
-	ext := determineFileExtension(url, resp.Header.Get("Content-Type"))
+	ext := utils.DetermineFileExtension(url, resp.Header.Get("Content-Type"))
 
 	// Additional verification for cases where Content-Type might be misleading
 	if ext == "jpg" || ext == "jpeg" {
@@ -296,41 +332,27 @@ func (md *MangaDownloader) downloadAndDetermineExtension(url, tempPath string) (
 }
 
 func (md *MangaDownloader) GetMangaTitle() (string, error) {
-	var title string
-	err := chromedp.Run(md.ctx,
-		chromedp.Navigate(md.config.BaseURL),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(`
-            // Try multiple selectors
-            document.querySelector('h1.heading')?.textContent.trim() || 
-            document.querySelector('h1.title')?.textContent.trim() || 
-            document.querySelector('div.manga-info h1')?.textContent.trim() || 
-            document.title.split('|')[0].trim() || 
-            "unknown"
-        `, &title),
-	)
-	return title, err
-}
-
-func determineFileExtension(url, contentType string) string {
-	// Check content type first
-	switch {
-	case strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg"):
-		return "jpg"
-	case strings.Contains(contentType, "png"):
-		return "png"
-	case strings.Contains(contentType, "webp"):
-		return "webp"
+	// Navigate to the base URL
+	if err := md.browserDP.Navigate(md.config.BaseURL); err != nil {
+		return "", fmt.Errorf("failed to navigate to base URL: %w", err)
 	}
 
-	// Fall back to URL extension
-	parts := strings.Split(url, ".")
-	if len(parts) > 1 {
-		possibleExt := parts[len(parts)-1]
-		if len(possibleExt) <= 4 { // Reasonable extension length
-			return possibleExt
-		}
+	// Sleep for 2 seconds to allow the page to load
+	md.browserDP.Bsleep(2)
+
+	// Evaluate JavaScript to extract the manga title
+	result, err := md.browserDP.Evaluate(`
+        // Try multiple selectors
+        document.querySelector('h1.heading')?.textContent.trim() || 
+        document.querySelector('h1.title')?.textContent.trim() || 
+        document.querySelector('div.manga-info h1')?.textContent.trim() || 
+        document.title.split('|')[0].trim() || 
+        "unknown"
+    `)
+	if err != nil {
+		return "", fmt.Errorf("failed to evaluate JavaScript for manga title: %w", err)
 	}
 
-	return "jpg" // Default
+	// Return the extracted title
+	return strings.TrimSpace(result), nil
 }

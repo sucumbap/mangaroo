@@ -4,30 +4,28 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/sucumbap/mangaroo/pkg/logger"
 	"go.uber.org/zap"
 )
 
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
-		// Log the incoming request
-		logger.Log.Info("Incoming request",
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-			zap.String("remote_addr", r.RemoteAddr),
-			zap.String("user_agent", r.UserAgent()),
-		)
+		defer func() {
+			logger.Log.Info("Request completed",
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+				zap.Int("status", ww.Status()),
+				zap.Int("bytes", ww.BytesWritten()),
+				zap.Duration("duration", time.Since(start)),
+				zap.String("request_id", middleware.GetReqID(r.Context())),
+			)
+		}()
 
-		next.ServeHTTP(w, r)
-
-		// Log the completed handling
-		logger.Log.Info("Request completed",
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-			zap.Duration("duration", time.Since(start)),
-		)
+		next.ServeHTTP(ww, r)
 	})
 }
 
