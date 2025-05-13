@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
+	"github.com/sucumbap/mangaroo/internal/core"
 	"github.com/sucumbap/mangaroo/internal/infrastructure/client"
 	"github.com/sucumbap/mangaroo/internal/infrastructure/storage"
-	"github.com/sucumbap/mangaroo/internal/utils"
 	"github.com/sucumbap/mangaroo/pkg/config"
 )
 
 type Handler struct {
-	// Add any dependencies you need here
-
+	Config        *config.Config
+	Repository    core.MangaRepository
+	ElasticClient *storage.ElasticClient
 }
 
 func (h *Handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
@@ -23,56 +25,92 @@ func (h *Handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Welcome to Mangaroo!"))
 }
 
-func (h *Handler) DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
-
-	cfg, err := config.Load()
+func NewHandler(cfg *config.Config) (*Handler, error) {
+	// Initialize ElasticClient
+	elasticClient, err := storage.NewElasticClient(cfg.Elasticsearch.URL)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load configuration: %v", err), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("failed to initialize Elasticsearch client: %w", err)
 	}
 
+	// Initialize Repository
+	repository := storage.NewElasticMangaRepository(elasticClient, "mangaroo")
+
+	return &Handler{
+		Config:        cfg,
+		Repository:    repository,
+		ElasticClient: elasticClient,
+	}, nil
+}
+
+func (h *Handler) DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
 	urlParam := r.URL.Query().Get("url")
 	if urlParam == "" {
-		utils.RespondWithError(w, http.StatusBadRequest, "URL parameter is required")
+		log.Println("URL parameter is missing")
+		http.Error(w, "URL parameter is required", http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("Download request received for URL: %s", urlParam)
 
 	// Extract manga ID from URL
 	var mangaID string
 	if parts := strings.Split(urlParam, "/manga/"); len(parts) > 1 {
 		mangaID = strings.TrimSuffix(parts[1], "/")
 	} else {
+		log.Println("Could not extract manga ID from URL, using 'unknown'")
 		mangaID = "unknown"
 	}
 
-	// Initialize Elastic client
-	elasticClient, err := storage.NewElasticClient(cfg.Elasticsearch.URL)
-	if err != nil {
-		utils.LogError("Elasticsearch connection", err)
-		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to initialize Elasticsearch client")
-		return
-	}
-
 	// Test Elasticsearch connection
-	if err := elasticClient.Ping(); err != nil {
+	log.Println("Testing Elasticsearch connection...")
+	if err := h.ElasticClient.Ping(); err != nil {
 		log.Printf("Elasticsearch ping failed: %v", err)
 		http.Error(w, fmt.Sprintf("Elasticsearch not available: %v", err), http.StatusServiceUnavailable)
 		return
 	}
+	log.Println("Elasticsearch connection successful")
 
 	config := client.Config{
 		BaseURL:      urlParam,
-		OutputFolder: "output",
-		UserAgent:    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		OutputFolder: h.Config.Downloader.OutputFolder,
+		UserAgent:    h.Config.Downloader.UserAgent,
 	}
 
+	var downloader *client.MangaDownloader
+	var err error
+
 	// Initialize downloader with manga ID
-	downloader, err := client.NewMangaDownloader(config, mangaID)
+	log.Println("Initializing manga downloader...")
+	downloader, err = client.NewMangaDownloader(config, mangaID)
 	if err != nil {
+		log.Printf("Failed to initialize downloader: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to initialize downloader: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer downloader.Close()
+	defer func() {
+		log.Println("Cleaning up resources...")
+		if r := recover(); r != nil {
+			log.Printf("PANIC RECOVERED in DownloadPostHandler: %v", r)
+			debug.PrintStack() // Print stack trace for debugging
+			http.Error(w, "An internal server error occurred", http.StatusInternalServerError)
+		}
+
+		if downloader != nil {
+			log.Println("Closing downloader...")
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("PANIC RECOVERED in downloader.Close(): %v", r)
+					}
+				}()
+				downloader.Close()
+			}()
+			log.Println("Downloader closed")
+		}
+	}()
+
+	// Set Elasticsearch client
+	downloader.SetElasticClient(h.ElasticClient)
 
 	// Get manga title
 	mangaTitle, err := downloader.GetMangaTitle()
@@ -82,16 +120,13 @@ func (h *Handler) DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create manga-specific index name
-	indexName := elasticClient.GetMangaIndexName(mangaTitle, mangaID)
+	indexName := h.ElasticClient.GetMangaIndexName(mangaTitle, mangaID)
 
 	// Ensure index exists
-	if err := elasticClient.EnsureIndex(indexName); err != nil {
+	if err := h.ElasticClient.EnsureIndex(indexName); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to ensure index exists: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	// Set Elasticsearch client
-	downloader.SetElasticClient(elasticClient)
 
 	// Start download process
 	if err := downloader.Run(); err != nil {
@@ -99,10 +134,22 @@ func (h *Handler) DownloadPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Save manga metadata to repository
+	manga := core.Manga{
+		ID:    mangaID,
+		Title: mangaTitle,
+		// Add other metadata...
+	}
+
+	if err := h.Repository.SaveManga(manga); err != nil {
+		log.Printf("Warning: Failed to save manga metadata: %v", err)
+		// Continue anyway as we've already downloaded the images
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "success",
 		"message": "Download complete",
-		"index":   indexName, // Return the index name for reference
+		"index":   indexName,
 	})
 }

@@ -17,14 +17,21 @@ import (
 func main() {
 	// Initialize logger
 	logger.InitLogger(false)
-	// Initialize Handler
-	handler := &api.Handler{}
-	r := api.SetupRouter(handler)
 
+	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
 	}
+
+	// Initialize Handler with dependencies
+	handler, err := api.NewHandler(cfg)
+	if err != nil {
+		log.Fatal("Failed to initialize handler:", err)
+	}
+
+	// Setup router
+	r := api.SetupRouter(handler)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,

@@ -72,10 +72,20 @@ func NewMangaDownloader(config Config, mangaID string) (*MangaDownloader, error)
 }
 
 func (md *MangaDownloader) Close() {
-	// Close the browser context
-	md.browserDP.CloseChromeDP()
-	// Cancel the context
-	md.cancelCtx()
+	if md == nil {
+		return
+	}
+
+	if md.browserDP != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Recovered from panic when closing browserDP: %v", r)
+				}
+			}()
+			md.browserDP.CloseChromeDP()
+		}()
+	}
 }
 
 func (md *MangaDownloader) Run() error {
@@ -332,15 +342,26 @@ func (md *MangaDownloader) downloadAndDetermineExtension(url, tempPath string) (
 }
 
 func (md *MangaDownloader) GetMangaTitle() (string, error) {
+	if md.browserDP == nil {
+		return "unknown", fmt.Errorf("browserDP is not initialized")
+	}
+
 	// Navigate to the base URL
+	log.Printf("Getting manga title for: %s", md.config.BaseURL)
 	if err := md.browserDP.Navigate(md.config.BaseURL); err != nil {
-		return "", fmt.Errorf("failed to navigate to base URL: %w", err)
+		log.Printf("Failed to navigate to base URL: %v", err)
+		return "unknown", fmt.Errorf("failed to navigate to base URL: %w", err)
 	}
 
 	// Sleep for 2 seconds to allow the page to load
-	md.browserDP.Bsleep(2)
+	log.Println("Waiting for page to load...")
+	if err := md.browserDP.Bsleep(2); err != nil {
+		log.Printf("Sleep failed: %v", err)
+		return "unknown", err
+	}
 
 	// Evaluate JavaScript to extract the manga title
+	log.Println("Evaluating JavaScript to extract title...")
 	result, err := md.browserDP.Evaluate(`
         // Try multiple selectors
         document.querySelector('h1.heading')?.textContent.trim() || 
@@ -350,9 +371,10 @@ func (md *MangaDownloader) GetMangaTitle() (string, error) {
         "unknown"
     `)
 	if err != nil {
-		return "", fmt.Errorf("failed to evaluate JavaScript for manga title: %w", err)
+		log.Printf("Failed to evaluate JavaScript for manga title: %v", err)
+		return "unknown", fmt.Errorf("failed to evaluate JavaScript for manga title: %w", err)
 	}
 
-	// Return the extracted title
+	log.Printf("Found manga title: %s", result)
 	return strings.TrimSpace(result), nil
 }
